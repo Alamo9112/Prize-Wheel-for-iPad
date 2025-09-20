@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<title>Prize Wheel — Code Gate Above, Smaller Wheel</title>
+<style>
+  /* === iPad/iOS tweaks === */
+  :root { --size: 560px; }
+  html,body{ height:100%; }
+  body{
+    margin:0; background:#0f1222; color:#eef1ff;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    display:grid; place-items:center;
+    /* Safe-area padding for notch/home bar when A2HS */
+    padding:
+      max(0px, env(safe-area-inset-top))
+      max(0px, env(safe-area-inset-right))
+      max(0px, env(safe-area-inset-bottom))
+      max(0px, env(safe-area-inset-left));
+  }
+
+  /* Layout: result banner (top) -> gate & buttons -> wheel -> small controls */
+  .app{ display:grid; gap:16px; justify-items:center; }
+
+  /* Result banner + subtext */
+  .result-wrap{ display:grid; gap:6px; justify-items:center; }
+  .result-banner{
+    min-height:2.1rem; font-weight:900; letter-spacing:.5px; font-size:1.8rem;
+    padding:.55rem 1.3rem; border-radius:999px; box-shadow:0 2px 8px rgba(0,0,0,.25);
+  }
+  .result-win  { background:#2fe07a; color:#042617; }
+  .result-lose { background:#ffd8d8; color:#3e0a0a; }
+  .result-hidden{ visibility:hidden; }
+  .result-sub{ min-height:1.1rem; font-size:1rem; opacity:0.9; text-align:center; }
+
+  /* Gate + primary buttons (above the wheel) */
+  .top-controls{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:center; }
+  .gate{
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center;
+    background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);
+    padding:8px 10px; border-radius:10px; font-size:12px;
+  }
+  /* Prevent iOS zoom on focus */
+  .gate input[type="text"]{
+    width:120px; padding:10px 12px; border-radius:8px;
+    border:1px solid rgba(255,255,255,.2);
+    background:rgba(255,255,255,.08); color:#eef1ff;
+    font-weight:800; letter-spacing:2px; text-align:center;
+    font-size:16px;
+  }
+  .gate .msg{ min-width:220px; text-align:center; }
+  .gate .ok{ color:#2fe07a; }
+  .gate .err{ color:#ffb4b4; }
+
+  .buttons{ display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+  .buttons button,
+  #clearCodeBtn, #exportBtn, #spinBtn, #resetBtn {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .buttons button:disabled{ opacity:.6; cursor:not-allowed; }
+
+  /* Wheel stage */
+  .stage{ position:relative; width:var(--size); height:var(--size); }
+  .pointer{
+    position:absolute; left:50%; top:-16px; transform:translateX(-50%);
+    width:0; height:0;
+    border-left:15px solid transparent; border-right:15px solid transparent;
+    border-top:26px solid #ffcb2e; filter:drop-shadow(0 2px 2px rgba(0,0,0,.35));
+    z-index:2; pointer-events:none;
+  }
+  canvas#wheel{ width:var(--size); height:var(--size); display:block; z-index:1; }
+
+  /* Full-screen celebration FX with dvh */
+  canvas#fx{
+    position:fixed; inset:0;
+    width:100vw; height:100vh;
+    height:100dvh; /* newer iOS */
+    pointer-events:none; z-index:999;
+  }
+
+  /* Small controls under wheel */
+  .row.micro { gap:12px; padding:10px 12px; display:flex; align-items:center; flex-wrap:wrap; justify-content:center; font-size:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); border-radius:10px; }
+  .row.micro input[type="range"]{ width:180px; }
+  .audio{ display:flex; gap:8px; align-items:center; }
+  .audio input[type="range"]{ width:160px; }
+
+  .meta{ display:none; }
+  #meta{ display:none; }
+  .usedcount{ opacity:.8; }
+</style>
+</head>
+<body>
+  <!-- Full-screen celebration canvas -->
+  <canvas id="fx"></canvas>
+
+  <div class="app" role="application" aria-label="Wheel Simulator">
+    <!-- Results -->
+    <div class="result-wrap" aria-live="polite" role="status">
+      <div id="resultBanner" class="result-banner result-hidden">—</div>
+      <div id="resultSub" class="result-sub"></div>
+    </div>
+
+    <!-- Code gate + primary buttons -->
+    <div class="top-controls">
+      <div class="gate">
+        <label for="codeInput"><strong>6-digit code</strong></label>
+        <input id="codeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" />
+        <button id="clearCodeBtn" type="button">Clear</button>
+        <button id="exportBtn" type="button">Export Used Codes (.txt)</button>
+        <span id="gateMsg" class="msg"></span>
+      </div>
+      <div class="buttons">
+        <button id="spinBtn"  type="button">🎯 Spin</button>
+        <button id="resetBtn" type="button">Reset</button>
+      </div>
+    </div>
+
+    <!-- Wheel -->
+    <div class="stage">
+      <div class="pointer" aria-hidden="true"></div>
+      <canvas id="wheel"></canvas>
+    </div>
+
+    <!-- Small controls -->
+    <div class="row micro">
+      <label>Win chance <input id="winRange" type="range" min="0" max="100" step="1" value="10" /></label>
+      <label>% <input id="winInput" type="number" min="0" max="100" step="1" value="10" /></label>
+      <span id="usedCount" class="usedcount">Used codes: 0</span>
+      <span class="audio"><label><input id="muteChk" type="checkbox" /> Mute</label></span>
+      <span class="audio"><label>Vol <input id="volRange" type="range" min="0" max="100" value="80" /></label></span>
+    </div>
+
+    <div class="meta" id="meta"></div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* Optional PWA: service worker registers ONLY when hosted over https/localhost */
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+  }
+
+  /* ====== constants ====== */
+  const POINTER_AT = 270, WEDGE_START = 300, SEG_DEG = 18, HUB_R = 56, RIM_INNER = 12;
+  const EXTRA_TURNS_FIXED = 5, SPIN_DURATION_MS = 4500, FX_TOTAL_MS = 4000;
+  const EASE = t => 1 - Math.pow(1 - t, 3);
+  const clamp = (n,a,b)=>Math.min(b,Math.max(a,n));
+  const mod360=d=>((d%360)+360)%360;
+  const rand=(min,max)=>Math.random()*(max-min)+min;
+  const randInt=(min,max)=>Math.floor(rand(min,max+1));
+  const d2r=deg=>deg*Math.PI/180;
+
+  /* ====== DOM ====== */
+  const wheelCanvas=document.getElementById("wheel"); const ctx=wheelCanvas.getContext("2d");
+  const fxCanvas=document.getElementById("fx"); const fx=fxCanvas.getContext("2d");
+  const resultBanner=document.getElementById("resultBanner"); const resultSub=document.getElementById("resultSub");
+  const winRange=document.getElementById("winRange"); const winInput=document.getElementById("winInput");
+  const spinBtn=document.getElementById("spinBtn"); const resetBtn=document.getElementById("resetBtn");
+  const muteChk=document.getElementById("muteChk"); const volRange=document.getElementById("volRange");
+  const codeInput=document.getElementById("codeInput"); const gateMsg=document.getElementById("gateMsg");
+  const clearCodeBtn=document.getElementById("clearCodeBtn"); const exportBtn=document.getElementById("exportBtn");
+  const usedCount=document.getElementById("usedCount");
+
+  /* ====== state ====== */
+  let winPercent=10, currentRotation=0, spinning=false, rafId=0;
+  let nextTickAtDegAbs=0, lastRotForTick=0;
+  let plan=[], planIndex=0;
+  const BLOCK_SIZE=5; // 1 win per 5 spins
+
+  // Codes
+  const CODES_KEY="wheel:usedCodes";
+  let usedCodes=new Set();
+
+  /* ====== codes persistence ====== */
+  function loadCodes(){
+    try{ const raw=localStorage.getItem(CODES_KEY); if(raw){ const arr=JSON.parse(raw); if(Array.isArray(arr)) usedCodes=new Set(arr);} }catch{}
+    updateUsedCount();
+  }
+  function saveCodes(){ try{ localStorage.setItem(CODES_KEY, JSON.stringify([...usedCodes])); }catch{} updateUsedCount(); }
+  function updateUsedCount(){ usedCount.textContent=`Used codes: ${usedCodes.size}`; }
+  function normalizeCode(str){ return (str||"").replace(/\D+/g,"").slice(0,6); }
+  function validateCodeForSpin(){
+    const code=normalizeCode(codeInput.value); codeInput.value=code;
+    if (code.length!==6){ setGateMsg("Enter exactly 6 digits.", true); return {ok:false}; }
+    if (usedCodes.has(code)){ setGateMsg("This code was already used.", true); return {ok:false}; }
+    setGateMsg("Code OK. You can spin!", false); return {ok:true, code};
+  }
+  function setGateMsg(msg,isErr){ gateMsg.textContent=msg; gateMsg.className="msg "+(isErr?"err":"ok"); }
+
+  /* ====== canvas sizing ====== */
+  function fitWheelCanvas(){
+    const rect=wheelCanvas.getBoundingClientRect(); const dpr=Math.max(1, window.devicePixelRatio||1);
+    wheelCanvas.width=Math.round(rect.width*dpr); wheelCanvas.height=Math.round(rect.height*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  function fitFxCanvas(){
+    const dpr=Math.max(1, window.devicePixelRatio||1);
+    fxCanvas.width=Math.round(window.innerWidth*dpr); fxCanvas.height=Math.round(window.innerHeight*dpr);
+    fx.setTransform(dpr,0,0,dpr,0,0);
+  }
+
+  /* ====== drawing ====== */
+  function drawWheel(rotationDeg){
+    const size=wheelCanvas.getBoundingClientRect().width; const cx=size/2, cy=size/2, R=size/2;
+    ctx.clearRect(0,0,size,size); ctx.save(); ctx.translate(cx,cy); ctx.rotate(d2r(rotationDeg)); ctx.translate(-cx,-cy);
+    // base
+    ctx.beginPath(); ctx.arc(cx,cy,R-6,0,Math.PI*2); ctx.fillStyle="#0b0f1d";
+    ctx.shadowColor="rgba(0,0,0,.45)"; ctx.shadowBlur=24; ctx.shadowOffsetY=18; ctx.fill(); ctx.shadowColor="transparent";
+    // stripes
+    for(let a=0;a<360;a+=SEG_DEG){ ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,R-RIM_INNER,d2r(a),d2r(a+SEG_DEG),false); ctx.closePath(); const even=((a/SEG_DEG)|0)%2===0; ctx.fillStyle=even?"#179a88":"#128679"; ctx.fill(); }
+    // win wedge
+    const winAngle=360*(winPercent/100);
+    if(winAngle>0){ ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,R-RIM_INNER,d2r(WEDGE_START),d2r(WEDGE_START+winAngle),false); ctx.closePath(); ctx.fillStyle="#ffcb2e"; ctx.fill(); }
+    // rim
+    ctx.beginPath(); ctx.arc(cx,cy,R-8,0,Math.PI*2); ctx.lineWidth=8; ctx.strokeStyle="rgba(255,255,255,.09)"; ctx.stroke();
+    ctx.restore();
+    // hub
+    ctx.beginPath(); ctx.arc(cx,cy,HUB_R,0,Math.PI*2);
+    const grd=ctx.createRadialGradient(cx-20,cy-16,6,cx,cy,HUB_R); grd.addColorStop(0,"#ffffff"); grd.addColorStop(0.55,"#d6ddff"); grd.addColorStop(1,"#9aa3ff");
+    ctx.fillStyle=grd; ctx.fill(); ctx.beginPath(); ctx.arc(cx,cy,HUB_R,0,Math.PI*2); ctx.lineWidth=12; ctx.strokeStyle="rgba(0,0,0,.1)"; ctx.stroke();
+  }
+
+  /* ====== landing ====== */
+  function chooseLandingAngle(forceWin){
+    const winAngle=360*(winPercent/100);
+    if(forceWin){ if(winAngle<=0) return mod360(WEDGE_START+0.5); return mod360(WEDGE_START+rand(0,Math.max(0.5,winAngle))); }
+    else { if(winAngle>=360) return mod360(WEDGE_START+winAngle+0.5); return mod360(WEDGE_START+rand(Math.max(0,winAngle),360)); }
+  }
+  function rotationForAngle(targetAngle, fromRotation){
+    const base=mod360(POINTER_AT-targetAngle);
+    let target=Math.floor(fromRotation/360)*360+base;
+    while(target<=fromRotation+1) target+=360;
+    const turnsNow=Math.floor((target-fromRotation)/360);
+    const addTurns=Math.max(0,EXTRA_TURNS_FIXED-turnsNow);
+    return target+360*addTurns;
+  }
+  function didWin(finalRotation){
+    const winAngle=360*(winPercent/100); if(winAngle<=0) return false; if(winAngle>=360) return true;
+    const theta=mod360(POINTER_AT-mod360(finalRotation)); const start=mod360(WEDGE_START); const end=mod360(WEDGE_START+winAngle);
+    if(start<=end) return theta>=start && theta<end; return theta>=start || theta<end;
+  }
+
+  /* ====== audio ====== */
+  let AC, masterGain, whooshGain, audioReady=false;
+  function ensureAudio(){
+    if(audioReady) return;
+    AC=new (window.AudioContext||window.webkitAudioContext)();
+    masterGain=AC.createGain(); masterGain.gain.value=(muteChk.checked?0:(+volRange.value/100)); masterGain.connect(AC.destination);
+    whooshGain=AC.createGain(); whooshGain.gain.value=0; whooshGain.connect(masterGain);
+    const bufferSize=2*AC.sampleRate; const noiseBuffer=AC.createBuffer(1,bufferSize,AC.sampleRate); const data=noiseBuffer.getChannelData(0);
+    for(let i=0;i<bufferSize;i++) data[i]=(Math.random()*2-1)*0.3;
+    const noise=AC.createBufferSource(); noise.buffer=noiseBuffer; noise.loop=true;
+    const bp=AC.createBiquadFilter(); bp.type="bandpass"; bp.frequency.value=1000; bp.Q.value=0.7;
+    noise.connect(bp).connect(whooshGain); noise.start(); audioReady=true;
+  }
+  function setMasterVolume(){ if(!audioReady) return; masterGain.gain.value=(muteChk.checked?0:(+volRange.value/100)); }
+  function playTick(intensity=1){ if(!audioReady||muteChk.checked) return; const t=AC.currentTime; const osc=AC.createOscillator(); const g=AC.createGain(); osc.type="square"; osc.frequency.value=1200+600*intensity+Math.random()*100; g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.25*intensity,t+0.005); g.gain.exponentialRampToValueAtTime(0.0001,t+0.06); osc.connect(g).connect(masterGain); osc.start(t); osc.stop(t+0.08); }
+  function playWinJingle(){ if(!audioReady||muteChk.checked) return; const t=AC.currentTime; [523.25,659.25,783.99,1046.5].forEach((f,i)=>{ const osc=AC.createOscillator(); const g=AC.createGain(); osc.type="sine"; osc.frequency.value=f; const s=t+i*0.08,e=s+0.28; g.gain.setValueAtTime(0.0001,s); g.gain.exponentialRampToValueAtTime(0.35,s+0.02); g.gain.exponentialRampToValueAtTime(0.0001,e); osc.connect(g).connect(masterGain); osc.start(s); osc.stop(e+0.02); }); }
+  function playLoseTone(){ if(!audioReady||muteChk.checked) return; const t=AC.currentTime; const osc=AC.createOscillator(); const g=AC.createGain(); osc.type="triangle"; osc.frequency.setValueAtTime(440,t); osc.frequency.exponentialRampToValueAtTime(180,t+0.5); g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.3,t+0.03); g.gain.exponentialRampToValueAtTime(0.0001,t+0.7); osc.connect(g).connect(masterGain); osc.start(t); osc.stop(t+0.8); }
+  function playCrackle(){ if(!audioReady||muteChk.checked) return; const t=AC.currentTime; const len=Math.floor(AC.sampleRate*0.06); const buf=AC.createBuffer(1,len,AC.sampleRate); const data=buf.getChannelData(0); for(let i=0;i<len;i++) data[i]=(Math.random()*2-1)*(1-i/len); const noise=AC.createBufferSource(); noise.buffer=buf; const g=AC.createGain(); g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.4,t+0.005); g.gain.exponentialRampToValueAtTime(0.0001,t+0.08); const hp=AC.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=800; noise.connect(hp).connect(g).connect(masterGain); noise.start(t); }
+  function setWhoosh(level){ if(!audioReady) return; const now=AC.currentTime; const target=Math.min(1,Math.max(0,level))*(muteChk.checked?0:(+volRange.value/100)); whooshGain.gain.cancelScheduledValues(now); whooshGain.gain.linearRampToValueAtTime(target*0.35, now+0.05); }
+  function silenceAudio(){ if(!audioReady) return; const now=AC.currentTime; whooshGain.gain.cancelScheduledValues(now); whooshGain.gain.setValueAtTime(0,now); }
+
+  /* ====== iOS Audio unlock ====== */
+  function tryResumeAudioContext(){ try{ if(AC && AC.state==="suspended") AC.resume(); }catch{} }
+  function oneTimeAudioUnlock(){
+    const unlock=()=>{ ensureAudio(); tryResumeAudioContext();
+      window.removeEventListener("touchstart",unlock,{passive:true});
+      window.removeEventListener("pointerdown",unlock,{passive:true});
+      window.removeEventListener("mousedown",unlock,{passive:true});
+    };
+    window.addEventListener("touchstart",unlock,{passive:true});
+    window.addEventListener("pointerdown",unlock,{passive:true});
+    window.addEventListener("mousedown",unlock,{passive:true});
+  }
+  document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") tryResumeAudioContext(); });
+
+  /* ====== celebration FX ====== */
+  let fxActive=false, fxParticles=[], fxStart=0, nextPopperAt=0, nextFireworkAt=0;
+  function spawnPopperBurst(){ const W=window.innerWidth,H=window.innerHeight; const edges=["left","right","top"]; const dir=edges[randInt(0,edges.length-1)]; let x,y; if(dir==="left"){x=40;y=rand(40,H*0.6);} else if(dir==="right"){x=W-40;y=rand(40,H*0.6);} else {x=rand(W*0.15,W*0.85);y=60;} for(let i=0;i<110;i++){ const angleDeg=(dir==='left'?rand(-10,70):dir==='right'?rand(110,190):rand(200,340)); const speed=rand(220,360); fxParticles.push({type:'confetti',x,y,vx:Math.cos(d2r(angleDeg))*speed,vy:Math.sin(d2r(angleDeg))*speed,g:600,life:rand(900,1500),size:rand(3,6),rot:rand(0,Math.PI*2),vr:rand(-8,8),color:`hsl(${Math.floor(rand(0,360))} 90% 60%)`}); } playCrackle(); playCrackle(); }
+  function spawnFireworkBurst(){ const W=window.innerWidth,H=window.innerHeight; const bx=rand(W*0.15,W*0.85),by=rand(H*0.18,H*0.55); const count=randInt(120,170); for(let i=0;i<count;i++){ const ang=(i/count)*Math.PI*2+rand(-0.1,0.1), sp=rand(160,300); fxParticles.push({type:'spark',x:bx,y:by,vx:Math.cos(ang)*sp,vy:Math.sin(ang)*sp,g:220,life:rand(800,1300),size:rand(2,3),color:`hsla(${Math.floor(rand(0,360))} 100% 70% / 1)`,fade:true}); } playCrackle(); }
+  function launchCelebration(){ fxActive=true; fxParticles=[]; fxStart=performance.now(); nextPopperAt=fxStart+rand(0,200); nextFireworkAt=fxStart+rand(80,300); requestAnimationFrame(fxTick); }
+  function fxTick(now){ if(!fxActive) return; const W=window.innerWidth,H=window.innerHeight; if(now<fxStart+FX_TOTAL_MS){ if(now>=nextPopperAt){spawnPopperBurst(); nextPopperAt=now+rand(250,600);} if(now>=nextFireworkAt){spawnFireworkBurst(); nextFireworkAt=now+rand(300,700);} } fx.clearRect(0,0,W,H); const dt=Math.min(40, now-(fxTick._last||now))/1000; fxTick._last=now; fxParticles.forEach(p=>{p.vy+=(p.g||0)*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;if(p.vr)p.rot+=p.vr*dt;p.life-=dt*1000; if(p.type==='confetti'){fx.save();fx.translate(p.x,p.y);fx.rotate(p.rot);fx.fillStyle=p.color;fx.fillRect(-p.size,-p.size,p.size*2,p.size*2);fx.restore();} else {const alpha=p.fade?Math.max(0,Math.min(1,p.life/900)):1; fx.beginPath(); fx.arc(p.x,p.y,p.size,0,Math.PI*2); fx.fillStyle=p.color.replace('/ 1)',`/ ${alpha})`); fx.fill();} }); fxParticles=fxParticles.filter(p=>p.life>0&&p.y<H+80&&p.x>-80&&p.x<W+80); if((now-fxStart)>=FX_TOTAL_MS && fxParticles.length===0){fxActive=false; fx.clearRect(0,0,W,H);} else {requestAnimationFrame(fxTick);} }
+
+  /* ====== UI helpers ====== */
+  function setWinPercent(p){ winPercent=clamp(Math.round(Number.isFinite(p)?p:0),0,100); winRange.value=String(winPercent); winInput.value=String(winPercent); drawWheel(currentRotation); }
+  function showBanner(win){ resultBanner.textContent=win?"WIN":"LOSE"; resultBanner.className=`result-banner ${win?"result-win":"result-lose"}`; resultSub.textContent=win?"🎆 Congratulations, You Win! 🎆":"😅 Sorry, it’s not a winner."; }
+  function hideBanner(){ resultBanner.className=`result-banner result-hidden`; resultSub.textContent=""; }
+
+  /* ====== plan ====== */
+  function makePlan(){ plan=Array(BLOCK_SIZE).fill(false); plan[randInt(0,BLOCK_SIZE-1)]=true; planIndex=0; }
+
+  /* ====== main spin ====== */
+  function spin(){
+    if (spinning) return;
+    const check=validateCodeForSpin(); if(!check.ok) return;
+    const code=check.code;
+
+    spinning=true; hideBanner(); ensureAudio(); if(window.AudioContext && AC?.state==="suspended") AC.resume();
+    if (planIndex>=BLOCK_SIZE) makePlan();
+    const forceWin=plan[planIndex]; planIndex++;
+
+    const landingAngle=chooseLandingAngle(forceWin);
+    const nextRotation=rotationForAngle(landingAngle, currentRotation);
+
+    lastRotForTick=currentRotation;
+    nextTickAtDegAbs=Math.ceil(currentRotation/SEG_DEG)*SEG_DEG;
+
+    const startTime=performance.now(); const startRot=currentRotation; const endRot=nextRotation;
+    setWhoosh(1);
+
+    const frame=(now)=>{
+      const t=Math.min(1,(now-startTime)/SPIN_DURATION_MS);
+      const k=EASE(t);
+      const rot=startRot+(endRot-startRot)*k;
+
+      const delta=rot-lastRotForTick;
+      const speed=Math.max(0,Math.min(1,delta/20));
+      while(rot>=nextTickAtDegAbs){ playTick(speed); nextTickAtDegAbs+=SEG_DEG; }
+      lastRotForTick=rot;
+
+      setWhoosh(speed);
+      drawWheel(rot);
+
+      if(t<1){ rafId=requestAnimationFrame(frame); }
+      else{
+        currentRotation=endRot; setWhoosh(0);
+        const win=didWin(currentRotation); showBanner(win);
+        if(win){ playWinJingle(); launchCelebration(); } else { playLoseTone(); }
+        usedCodes.add(code); saveCodes(); setGateMsg("Code recorded. Thank you!", false);
+        spinning=false;
+      }
+    };
+    rafId=requestAnimationFrame(frame);
+  }
+
+  function resetWheel(){
+    if(rafId){ cancelAnimationFrame(rafId); rafId=0; }
+    spinning=false; currentRotation=0;
+    nextTickAtDegAbs=Math.ceil(currentRotation/SEG_DEG)*SEG_DEG; lastRotForTick=currentRotation;
+    hideBanner(); drawWheel(currentRotation);
+    fxActive=false; fxParticles=[]; fx.clearRect(0,0,fxCanvas.width,fxCanvas.height); silenceAudio();
+  }
+
+  /* ====== Export Used Codes (iPad-friendly) ====== */
+  async function exportCodes(){
+    const lines=[...usedCodes].sort().join("\n") + (usedCodes.size ? "\n" : "");
+    const blob=new Blob([lines], {type:"text/plain"}); const filename="used_codes.txt";
+    const canShareFile=!!(navigator.canShare && navigator.canShare({ files:[new File(["x"],"x.txt",{type:"text/plain"})] }));
+    if(navigator.share && canShareFile){
+      try{ const file=new File([blob], filename, {type:"text/plain"});
+        await navigator.share({ files:[file], title:"Used Codes", text:"Exported used codes" }); return; }catch(e){}
+    }
+    try{ const url=URL.createObjectURL(blob); const a=document.createElement("a");
+      a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); return;
+    }catch(e){}
+    try{ await navigator.clipboard.writeText(lines); alert("Codes copied to clipboard."); }
+    catch(e){ const dataUrl="data:text/plain;charset=utf-8,"+encodeURIComponent(lines); window.open(dataUrl,"_blank"); }
+  }
+
+  /* ====== init ====== */
+  function init(){
+    fitWheelCanvas(); fitFxCanvas();
+    oneTimeAudioUnlock();
+    window.addEventListener("resize", ()=>{ fitWheelCanvas(); fitFxCanvas(); drawWheel(currentRotation); });
+
+    winRange.addEventListener("input", e=>setWinPercent(parseInt(e.target.value,10)));
+    winInput.addEventListener("input", e=>setWinPercent(parseInt(e.target.value||"0",10)));
+    spinBtn.addEventListener("click", spin);
+    resetBtn.addEventListener("click", resetWheel);
+    muteChk.addEventListener("change", setMasterVolume);
+    volRange.addEventListener("input", setMasterVolume);
+
+    codeInput.addEventListener("input", ()=>{
+      const before=codeInput.value, norm=normalizeCode(before);
+      if(before!==norm) codeInput.value=norm;
+      if(norm.length===6){
+        if(usedCodes.has(norm)) setGateMsg("This code was already used.", true);
+        else setGateMsg("Code OK. You can spin!", false);
+      } else if(norm.length>0){
+        setGateMsg("Enter exactly 6 digits.", true);
+      } else { setGateMsg("", false); }
+    });
+    clearCodeBtn.addEventListener("click", ()=>{ codeInput.value=""; setGateMsg("", false); });
+    exportBtn.addEventListener("click", exportCodes);
+
+    loadCodes();
+    setWinPercent(10);
+    makePlan();
+    drawWheel(currentRotation);
+  }
+  init();
+})();
+</script>
+</body>
+</html>
