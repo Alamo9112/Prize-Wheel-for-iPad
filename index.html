@@ -40,10 +40,12 @@
 
   /* Gate + primary buttons (above the wheel) */
   /* Stack controls above the wheel (Gate on its own row, then Buttons) */
+  /* Put extra space between the buttons row and the wheel */
   .top-controls{
     display: grid;
     gap: 12px;
     justify-items: center;
+    margin-bottom: 24px;  /* 👈 moves the wheel lower */
   }
 
   .gate{
@@ -64,6 +66,7 @@
   .gate .err{ color:#ffb4b4; }
 
   /* Buttons row */
+  /* Buttons row (keep your light-blue pill look) */
   .buttons{
     display: flex;
     gap: 14px;
@@ -395,11 +398,57 @@
     catch(e){ const dataUrl="data:text/plain;charset=utf-8,"+encodeURIComponent(lines); window.open(dataUrl,"_blank"); }
   }
 
+  function updateWheelSize(){
+    // Account for safe-area paddings set on <body>
+    const cs = getComputedStyle(document.body);
+    const padTop    = parseFloat(cs.paddingTop)    || 0;
+    const padBottom = parseFloat(cs.paddingBottom) || 0;
+    const padLeft   = parseFloat(cs.paddingLeft)   || 0;
+    const padRight  = parseFloat(cs.paddingRight)  || 0;
+
+    const viewportW = window.innerWidth  - padLeft - padRight;
+    const viewportH = window.innerHeight - padTop  - padBottom;
+
+    // Measure what’s above and below the wheel
+    const resultWrap  = document.querySelector('.result-wrap');
+    const topControls = document.querySelector('.top-controls');
+    const microRow    = document.querySelector('.row.micro');
+
+    // Reserve space for those rows + a little breathing room
+    const reservedH = (resultWrap?.offsetHeight  || 0)
+                    + (topControls?.offsetHeight || 0)
+                    + (microRow?.offsetHeight    || 0)
+                    + 48; // extra padding between sections
+
+    const availableH = Math.max(0, viewportH - reservedH);
+    const availableW = Math.max(0, viewportW - 32); // small horizontal padding
+
+    // Target the largest square that fits; clamp between min/max
+    const raw = Math.min(availableW, availableH);
+    const MIN = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--wheel-min')) || 320;
+    const MAX = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--wheel-max')) || 760;
+
+    // If raw is NaN/too small (e.g., keyboard open), fall back to MIN
+    let size = (!isFinite(raw) || raw < MIN) ? MIN : Math.min(MAX, raw);
+
+    // Set CSS variable so the canvas picks it up
+    document.documentElement.style.setProperty('--size', `${Math.round(size)}px`);
+  }
+
+
   /* ====== init ====== */
   function init(){
-    fitWheelCanvas(); fitFxCanvas();
+    updateWheelSize();    
+    fitWheelCanvas(); 
+    fitFxCanvas();
     oneTimeAudioUnlock();
-    window.addEventListener("resize", ()=>{ fitWheelCanvas(); fitFxCanvas(); drawWheel(currentRotation); });
+
+    window.addEventListener("resize", () => {
+      updateWheelSize();            // 👈 recalc on rotation/resize
+      fitWheelCanvas();
+      fitFxCanvas();
+      drawWheel(currentRotation);
+    });
 
     winRange.addEventListener("input", e=>setWinPercent(parseInt(e.target.value,10)));
     winInput.addEventListener("input", e=>setWinPercent(parseInt(e.target.value||"0",10)));
